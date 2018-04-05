@@ -4,9 +4,6 @@ import java.io.*;
 import java.util.List;
 import java.util.concurrent.atomic.AtomicBoolean;
 import javax.inject.Inject;
-import javax.script.ScriptContext;
-import javax.script.ScriptEngine;
-import javax.script.ScriptEngineManager;
 
 import com.google.inject.assistedinject.Assisted;
 import org.graylog2.plugin.configuration.Configuration;
@@ -22,6 +19,10 @@ import org.msgpack.annotation.NotNullable;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
+import java.util.regex.Pattern;
+import java.util.regex.Matcher;
+import java.util.Map;
+
 /**
  * This is the plugin. Your class should implement one of the existing plugin
  * interfaces. (i.e. AlarmCallback, MessageInput, MessageOutput)
@@ -29,21 +30,19 @@ import org.slf4j.LoggerFactory;
 public class dfchBizExecScript implements MessageOutput
 {
     private static final String DF_PLUGIN_NAME = "d-fens SCRIPT Output";
-
-    private static final String DF_SCRIPT_ENGINE = "DF_SCRIPT_ENGINE";
-    private static final String DF_SCRIPT_PATH_AND_NAME = "DF_SCRIPT_PATH_AND_NAME";
     private static final String DF_DISPLAY_SCRIPT_OUTPUT = "DF_DISPLAY_SCRIPT_OUTPUT";
-    private static final String DF_SCRIPT_CACHE_CONTENTS = "DF_SCRIPT_CACHE_CONTENTS";
-
+    private static final String DF_SCRIPT = "DF_SCRIPT";
+    private static String findAndReplaceAll( String pattern, String replaceWith, String inputString)	{
+        Pattern p = Pattern.compile(pattern);
+        Matcher matcher = p.matcher(inputString);
+        return matcher.replaceAll(replaceWith);
+    }
+    
     private final AtomicBoolean isRunning = new AtomicBoolean(false);
     private Configuration configuration;
     private String streamTitle;
+    private String _script;
 
-    private static final ScriptEngineManager _scriptEngineManager = new ScriptEngineManager();
-    private ScriptEngine _scriptEngine;
-    private ScriptContext _scriptContext;
-    StringWriter _stringWriter = new StringWriter();
-    private File _file;
 
     private static final Logger LOG = LoggerFactory.getLogger(dfchBizExecScript.class);
 
@@ -67,14 +66,10 @@ public class dfchBizExecScript implements MessageOutput
                 throw new MessageOutputConfigurationException(String.format("streamTitle: Parameter validation FAILED. Value cannot be null or empty."));
             }
             
-            LOG.trace("DF_SCRIPT_ENGINE         : %s\r\n", configuration.getString("DF_SCRIPT_ENGINE"));
-            LOG.trace("DF_SCRIPT_PATH_AND_NAME  : %s\r\n", configuration.getString("DF_SCRIPT_PATH_AND_NAME"));
+            LOG.trace("DF_SCRIPT                : %s\r\n", configuration.getString("DF_SCRIPT"));
             LOG.trace("DF_DISPLAY_SCRIPT_OUTPUT : %b\r\n", configuration.getBoolean("DF_DISPLAY_SCRIPT_OUTPUT"));
-            LOG.trace("DF_SCRIPT_CACHE_CONTENTS : %b\r\n", configuration.getBoolean("DF_SCRIPT_CACHE_CONTENTS"));
-
-            _file = new File(configuration.getString("DF_SCRIPT_PATH_AND_NAME"));
-            _scriptEngine = _scriptEngineManager.getEngineByName(configuration.getString("DF_SCRIPT_ENGINE"));
-            _scriptContext = _scriptEngine.getContext();
+            
+            _script = configuration.getString("DF_SCRIPT");
 
             isRunning.set(true);
 
@@ -104,6 +99,7 @@ public class dfchBizExecScript implements MessageOutput
     @Override
     public void write(Message msg) throws Exception
     {
+        String _run = _script;
         if(!isRunning.get())
         {
             return;
@@ -111,18 +107,16 @@ public class dfchBizExecScript implements MessageOutput
 
         try
         {
-            _stringWriter.getBuffer().setLength(0);
-            _scriptContext.setWriter(_stringWriter);
-            _scriptEngine.put("message", msg);
-            if(!configuration.getBoolean("DF_SCRIPT_CACHE_CONTENTS"))
-            {
-                _file = new File(configuration.getString("DF_SCRIPT_PATH_AND_NAME"));
+			for (Map.Entry<String, Object> entry : msg.getFields().entrySet()) {
+                /// replace keys with values in command
+				_run = findAndReplaceAll("\\$\\{" + entry.getKey() + "\\}", entry.getValue().toString(), _run);
             }
-            Reader _reader = new FileReader(_file);
-            _scriptEngine.eval(_reader);
+            /// run command
+            Runtime.getRuntime().exec(new String[]{"bash","-c",_run});
+
             if(configuration.getBoolean("DF_DISPLAY_SCRIPT_OUTPUT")) {
-                LOG.info(String.format("%s\r\n", _stringWriter.toString()));
-                LOG.trace("%s\r\n", _stringWriter.toString());
+                LOG.info(String.format("%s\r\n", _run.toString()));
+                LOG.trace("%s\r\n", _run.toString());
             }
 
         }
@@ -153,26 +147,13 @@ public class dfchBizExecScript implements MessageOutput
 
             configurationRequest.addField(new TextField
                             (
-                                    DF_SCRIPT_ENGINE
+                                    DF_SCRIPT
                                     ,
-                                    "Script Engine"
+                                    "Script"
                                     ,
-                                    "javascript"
+                                    "echo example"
                                     ,
-                                    "Specify the name of the script engine to use."
-                                    ,
-                                    ConfigurationField.Optional.NOT_OPTIONAL
-                            )
-            );
-            configurationRequest.addField(new TextField
-                            (
-                                    DF_SCRIPT_PATH_AND_NAME
-                                    ,
-                                    "Script Path"
-                                    ,
-                                    "/opt/graylog2/plugin/bizDfchMessageOutputScript.js"
-                                    ,
-                                    "Specify the full path and name of the script to execute."
+                                    "Specify bash script to execute."
                                     ,
                                     ConfigurationField.Optional.NOT_OPTIONAL
                             )
@@ -186,17 +167,6 @@ public class dfchBizExecScript implements MessageOutput
                                     false
                                     ,
                                     "Show the script output on the console."
-                            )
-            );
-            configurationRequest.addField(new BooleanField
-                            (
-                                    DF_SCRIPT_CACHE_CONTENTS
-                                    ,
-                                    "Cache script contents"
-                                    ,
-                                    true
-                                    ,
-                                    "Cache the contents of the script upon plugin initialisation."
                             )
             );
             return configurationRequest;
